@@ -1,0 +1,14 @@
+# Entorno
+.env
+__pycache__/
+*.pyc
+
+# Base de datos local
+viajes.db
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
