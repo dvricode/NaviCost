@@ -23,13 +23,16 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
+    def s(txt):
+        return str(txt).replace("€", "EUR")
+    
     # Texto oscuro
     pdf.set_text_color(40, 40, 40)
     
     # ─── TÍTULO DEL VIAJE ───
     pdf.set_y(50)
     pdf.set_font("helvetica", "B", 20)
-    pdf.cell(0, 10, f"{viaje['nombre'].upper()}", ln=True, align="C")
+    pdf.cell(0, 10, s(viaje['nombre']).upper(), ln=True, align="C")
     pdf.ln(10)
     
     # ─── INFORMACIÓN GENERAL ───
@@ -41,7 +44,7 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     pdf.set_font("helvetica", "", 12)
     pdf.cell(45, 8, "Estado:", border=0)
     pdf.set_font("helvetica", "B", 12)
-    pdf.cell(50, 8, viaje.get('estado', 'Planificado'), border=0, ln=True)
+    pdf.cell(50, 8, s(viaje.get('estado', 'Planificado')), border=0, ln=True)
 
     pdf.set_font("helvetica", "", 12)
     pdf.cell(45, 8, "Distancia I/V:", border=0)
@@ -58,8 +61,8 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     pdf.set_font("helvetica", "", 12)
     pdf.cell(45, 8, "Fechas:", border=0)
     pdf.set_font("helvetica", "B", 12)
-    f_ida = viaje.get('fecha_ida') or 'N/A'
-    f_vue = viaje.get('fecha_vuelta') or 'N/A'
+    f_ida = s(viaje.get('fecha_ida')) or 'N/A'
+    f_vue = s(viaje.get('fecha_vuelta')) or 'N/A'
     pdf.cell(50, 8, f"{f_ida} a {f_vue}", border=0)
     
     pdf.set_font("helvetica", "", 12)
