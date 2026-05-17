@@ -79,14 +79,14 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     pdf.set_fill_color(102, 126, 234) # Color principal
     pdf.set_text_color(255, 255, 255)
     pdf.cell(140, 10, "Concepto", border=1, fill=True)
-    pdf.cell(50, 10, "Importe (€)", border=1, align="R", fill=True, ln=True)
+    pdf.cell(50, 10, "Importe (EUR)", border=1, align="R", fill=True, ln=True)
     
     pdf.set_text_color(40, 40, 40)
     pdf.set_font("helvetica", "", 12)
     
     def add_row(concepto, importe):
         pdf.cell(140, 10, concepto, border=1)
-        pdf.cell(50, 10, f"{float(importe):.2f} €", border=1, align="R", ln=True)
+        pdf.cell(50, 10, f"{float(importe):.2f} EUR", border=1, align="R", ln=True)
         
     add_row("Alojamiento (Reserva total)", viaje.get('precio_reserva', 0))
     add_row("Transporte (Combustible ruta)", viaje.get('gasto_gasolina', 0))
@@ -102,7 +102,7 @@ def generar_informe_viaje(viaje: dict) -> bytes:
                 pdf.set_font("helvetica", "I", 10)
                 for ex in extras_list:
                     pdf.cell(140, 8, f"   - {ex['concepto']}", border="LR")
-                    pdf.cell(50, 8, f"{float(ex['coste']):.2f} €", border="LR", align="R", ln=True)
+                    pdf.cell(50, 8, f"{float(ex['coste']):.2f} EUR", border="LR", align="R", ln=True)
                 pdf.set_font("helvetica", "", 12)
                 # Cerrar borde
                 pdf.cell(140, 0, "", border="T")
@@ -121,12 +121,12 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     persona = float(viaje.get('coste_persona', 0))
     
     pdf.cell(140, 15, " COSTE TOTAL ESTIMADO", border=0, fill=True)
-    pdf.cell(50, 15, f"{total:.2f} €", border=0, align="R", fill=True, ln=True)
+    pdf.cell(50, 15, f"{total:.2f} EUR", border=0, align="R", fill=True, ln=True)
     
     pdf.set_fill_color(220, 235, 220) # Verde claro
     pdf.set_text_color(40, 40, 40)
     pdf.cell(140, 12, " Coste exacto por persona", border=0, fill=True)
-    pdf.cell(50, 12, f"{persona:.2f} €", border=0, align="R", fill=True, ln=True)
+    pdf.cell(50, 12, f"{persona:.2f} EUR", border=0, align="R", fill=True, ln=True)
     
     # Devolver bytes
     return pdf.output()
