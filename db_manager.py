@@ -36,8 +36,13 @@ def init_db() -> None:
 
 def guardar_viaje(datos: dict) -> int:
     """Inserta una nueva opción de viaje en Supabase."""
-    response = supabase.table("viajes").insert(datos).execute()
-    return response.data[0]["id"] if response.data else -1
+    try:
+        response = supabase.table("viajes").insert(datos).execute()
+        return response.data[0]["id"] if response.data else -1
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Error detallado de Supabase: {getattr(e, 'message', str(e))} - {getattr(e, 'details', '')}")
+        raise e
 
 
 def obtener_viajes() -> list[dict]:
