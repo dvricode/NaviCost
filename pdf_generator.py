@@ -132,4 +132,4 @@ def generar_informe_viaje(viaje: dict) -> bytes:
     pdf.cell(50, 12, f"{persona:.2f} EUR", border=0, align="R", fill=True, ln=True)
     
     # Devolver bytes
-    return pdf.output()
+    return bytes(pdf.output())
