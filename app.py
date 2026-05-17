@@ -20,6 +20,7 @@ import json
 import db_manager
 import ai_helper
 import weather_helper
+import pdf_generator
 
 # ─── Configuración de página ─────────────────────────────────────────────
 st.set_page_config(
@@ -461,15 +462,33 @@ with tab_dashboard:
             hide_index=True,
         )
 
-        # Exportar a Excel
-        excel_buffer = BytesIO()
-        df_display.to_excel(excel_buffer, index=False, engine="openpyxl")
-        st.download_button(
-            "📤 Exportar a Excel",
-            data=excel_buffer.getvalue(),
-            file_name="navicost_comparacion.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        # Exportar a Excel y PDF
+        col_ex, col_pdf = st.columns(2)
+        
+        with col_ex:
+            excel_buffer = BytesIO()
+            df_display.to_excel(excel_buffer, index=False, engine="openpyxl")
+            st.download_button(
+                "📤 Exportar a Excel (Todos)",
+                data=excel_buffer.getvalue(),
+                file_name="navicost_comparacion.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+        with col_pdf:
+            trip_names = {f"{v['nombre']} (ID: {v['id']})": v for v in viajes}
+            selected_pdf = st.selectbox("Selecciona viaje para PDF", list(trip_names.keys()), label_visibility="collapsed")
+            if selected_pdf:
+                viaje_pdf = trip_names[selected_pdf]
+                pdf_bytes = pdf_generator.generar_informe_viaje(viaje_pdf)
+                st.download_button(
+                    "📄 Descargar Informe PDF",
+                    data=pdf_bytes,
+                    file_name=f"informe_viaje_{viaje_pdf['nombre'].replace(' ', '_').lower()}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
 
         # Gráfico de barras agrupadas (Altair)
         if len(viajes) >= 1:
