@@ -12,3 +12,7 @@ viajes.db
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Archivos exportados/importados
+*.xlsx
+*.pdf

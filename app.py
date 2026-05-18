@@ -1,10 +1,8 @@
 """
 app.py — Aplicación principal de NaviCost (TripCalc AI).
 
-Gestiona y compara opciones de viajes calculando el Coste Real Total:
-alojamiento + gasolina + comida, con mapa interactivo y veredicto IA.
-
-Ejecutar con: streamlit run app.py
+Gestiona y compara opciones de viajes calculando el Coste Real Total.
+Ahora con sistema de usuarios, roles de administrador y viajes colaborativos.
 """
 
 import streamlit as st
@@ -16,6 +14,16 @@ import pandas as pd
 import altair as alt
 from io import BytesIO
 import json
+import uuid
+import logging
+
+# Configuración básica de logs para que salgan en consola
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - [%(levelname)s] - %(module)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+logger.info("Iniciando la aplicación NaviCost...")
 
 import db_manager
 import ai_helper
@@ -80,7 +88,6 @@ div[data-testid="stSidebar"] {
 </style>
 """, unsafe_allow_html=True)
 
-# ─── Inicializar base de datos ────────────────────────────────────────────
 db_manager.init_db()
 
 # ─── Estado de sesión ─────────────────────────────────────────────────────
@@ -88,10 +95,10 @@ for key, default in {
     "punto_a": None, "punto_b": None,
     "seleccionando": "A", "last_calc": None,
     "gastos_extra_list": [],
+    "usuario_actual": None,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # FUNCIONES AUXILIARES
@@ -99,7 +106,6 @@ for key, default in {
 
 @st.cache_data(ttl=3600)
 def geocodificar(direccion: str):
-    """Convierte una dirección en coordenadas (lat, lon)."""
     try:
         geo = Nominatim(user_agent="navicost_app", timeout=10)
         loc = geo.geocode(direccion)
@@ -109,10 +115,8 @@ def geocodificar(direccion: str):
         pass
     return None
 
-
 @st.cache_data(ttl=600)
 def obtener_ruta_osrm(lat1, lon1, lat2, lon2):
-    """Consulta OSRM para obtener distancia y tiempo de conducción."""
     url = (
         f"http://router.project-osrm.org/route/v1/driving/"
         f"{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson"
@@ -131,9 +135,7 @@ def obtener_ruta_osrm(lat1, lon1, lat2, lon2):
         pass
     return None
 
-
 def calcular_costes(distancia_km, consumo, precio_comb, personas, reserva, comida_total, extras=0):
-    """Calcula todos los costes del viaje."""
     ida_vuelta = distancia_km * 2
     gasolina = (ida_vuelta / 100) * consumo * precio_comb
     total = gasolina + reserva + comida_total + extras
@@ -147,25 +149,73 @@ def calcular_costes(distancia_km, consumo, precio_comb, personas, reserva, comid
         "coste_persona": round(por_persona, 2),
     }
 
-
-def formatear_tiempo(minutos):
-    """Formatea minutos a horas y minutos."""
-    if not minutos:
-        return "—"
-    h, m = divmod(int(minutos), 60)
-    return f"{h}h {m}min" if h else f"{m}min"
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# ENCABEZADO
+# AUTENTICACIÓN (LOGIN / REGISTRO)
 # ═══════════════════════════════════════════════════════════════════════════
+
+def mostrar_pantalla_auth():
+    # Contenedor principal para centrar
+    _, col_centro, _ = st.columns([1, 1.5, 1])
+    
+    with col_centro:
+        st.markdown('<h1 class="main-title" style="font-size:2.5rem; margin-bottom: 0.5rem;">🧭 NaviCost</h1>', unsafe_allow_html=True)
+        st.markdown('<p style="color:#888; font-size:1rem; text-align:center; margin-bottom:1.5rem;">Planificador Inteligente de Viajes Colaborativos</p>', unsafe_allow_html=True)
+        
+        tab_login, tab_reg = st.tabs(["🔑 Iniciar Sesión", "📝 Crear Cuenta"])
+        
+        with tab_login:
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.form("login_form"):
+                user_login = st.text_input("Usuario", placeholder="Tu nombre de usuario")
+                pass_login = st.text_input("Contraseña", type="password", placeholder="••••••••")
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.form_submit_button("Acceder", type="primary", use_container_width=True):
+                    if not user_login or not pass_login:
+                        st.error("⚠️ Rellena todos los campos.")
+                    else:
+                        res = db_manager.verificar_login(user_login, pass_login)
+                        if "success" in res:
+                            st.session_state.usuario_actual = res["user"]
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {res['error']}")
+        
+        with tab_reg:
+            st.markdown("<br>", unsafe_allow_html=True)
+            with st.form("register_form"):
+                user_reg = st.text_input("Nuevo Usuario", placeholder="Elige un nombre de usuario")
+                pass_reg = st.text_input("Nueva Contraseña", type="password", placeholder="Crea una contraseña segura")
+                pass_reg2 = st.text_input("Repetir Contraseña", type="password", placeholder="Vuelve a escribirla")
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.form_submit_button("Registrarse y Entrar", type="primary", use_container_width=True):
+                    if not user_reg or not pass_reg:
+                        st.error("⚠️ Rellena todos los campos.")
+                    elif pass_reg != pass_reg2:
+                        st.error("⚠️ Las contraseñas no coinciden.")
+                    else:
+                        res = db_manager.registrar_usuario(user_reg, pass_reg)
+                        if "success" in res:
+                            st.success("✅ ¡Cuenta creada! Ya puedes iniciar sesión en la otra pestaña.")
+                        else:
+                            st.error(f"❌ {res['error']}")
+
+if not st.session_state.usuario_actual:
+    mostrar_pantalla_auth()
+    st.stop()
+
+
+# ====================================================================================
+# APP PRINCIPAL (USUARIO LOGUEADO)
+# ====================================================================================
+
+user_actual = st.session_state.usuario_actual
+es_admin = user_actual.get("rol") == "admin"
 
 st.markdown('<h1 class="main-title">🧭 NaviCost</h1>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Calcula el coste real de tus viajes — Alojamiento + Gasolina + Comida</p>', unsafe_allow_html=True)
-
+st.markdown(f'<p class="subtitle">Bienvenido/a, <b>{user_actual["username"]}</b> (Rol: {user_actual["rol"]})</p>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SIDEBAR — FORMULARIO DE VIAJE
+# SIDEBAR
 # ═══════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
@@ -173,71 +223,51 @@ with st.sidebar:
 
     nombre = st.text_input("🏷️ Nombre de la opción", placeholder="Ej: Apartamento playa Valencia")
 
-    st.markdown("---")
     st.markdown("### 📍 Ubicaciones")
 
     col_sel1, col_sel2 = st.columns(2)
     with col_sel1:
-        if st.button("📌 Seleccionar Origen", use_container_width=True,
-                      type="primary" if st.session_state.seleccionando == "A" else "secondary"):
+        if st.button("📌 Origen", use_container_width=True, type="primary" if st.session_state.seleccionando == "A" else "secondary"):
             st.session_state.seleccionando = "A"
     with col_sel2:
-        if st.button("🎯 Seleccionar Destino", use_container_width=True,
-                      type="primary" if st.session_state.seleccionando == "B" else "secondary"):
+        if st.button("🎯 Destino", use_container_width=True, type="primary" if st.session_state.seleccionando == "B" else "secondary"):
             st.session_state.seleccionando = "B"
 
-    sel = st.session_state.seleccionando
-    st.info(f"🖱️ Haz clic en el mapa para fijar el **{'Origen (A)' if sel == 'A' else 'Destino (B)'}**")
-
-    # Direcciones manuales
-    dir_origen = st.text_input("Dirección origen (opcional)", placeholder="Ej: Madrid, España")
-    dir_destino = st.text_input("Dirección destino (opcional)", placeholder="Ej: Valencia, España")
+    dir_origen = st.text_input("Dirección origen", placeholder="Ej: Madrid, España")
+    dir_destino = st.text_input("Dirección destino", placeholder="Ej: Valencia, España")
 
     col_geo1, col_geo2 = st.columns(2)
     with col_geo1:
-        if st.button("🔍 Buscar origen", use_container_width=True) and dir_origen:
+        if st.button("🔍 Buscar O", use_container_width=True) and dir_origen:
             result = geocodificar(dir_origen)
             if result:
                 st.session_state.punto_a = {"lat": result[0], "lng": result[1]}
-                st.success(f"✅ {result[2][:50]}")
-            else:
-                st.error("No encontrado")
     with col_geo2:
-        if st.button("🔍 Buscar destino", use_container_width=True) and dir_destino:
+        if st.button("🔍 Buscar D", use_container_width=True) and dir_destino:
             result = geocodificar(dir_destino)
             if result:
                 st.session_state.punto_b = {"lat": result[0], "lng": result[1]}
-                st.success(f"✅ {result[2][:50]}")
-            else:
-                st.error("No encontrado")
 
     pa = st.session_state.punto_a
     pb = st.session_state.punto_b
-    if pa:
-        st.success(f"📌 Origen: {pa['lat']:.4f}, {pa['lng']:.4f}")
-    if pb:
-        st.success(f"🎯 Destino: {pb['lat']:.4f}, {pb['lng']:.4f}")
 
-    st.markdown("---")
     st.markdown("### ⛽ Transporte")
     consumo = st.number_input("Consumo (L/100km)", 1.0, 30.0, 7.0, 0.5)
-    precio_comb = st.number_input("Precio combustible (€/L)", 0.5, 3.0, 1.55, 0.05)
+    precio_comb = st.number_input("Precio comb. (€/L)", 0.5, 3.0, 1.55, 0.05)
 
-    st.markdown("---")
     st.markdown("### 🏨 Estancia")
-    mis_alojs = db_manager.obtener_alojamientos()
+    mis_alojs = db_manager.obtener_alojamientos(user_actual["id"], es_admin)
     opciones_aloj = {"Ninguno": None}
     for a in mis_alojs:
         opciones_aloj[f"{a['nombre']} ({a['precio_noche']:.0f}€/n)"] = a['id']
     aloj_seleccionado = st.selectbox("Vincular Alojamiento", list(opciones_aloj.keys()))
     aloj_id_vinculado = opciones_aloj[aloj_seleccionado]
 
-    personas = st.number_input("Número de personas", 1, 20, 2)
-    dias = st.number_input("Número de días", 1, 60, 3)
-    reserva = st.number_input("Precio reserva alojamiento (€)", 0.0, 50000.0, 150.0, 10.0)
-    comida_total = st.number_input("Presupuesto total comida (€)", 0.0, 50000.0, 200.0, 10.0)
+    personas = st.number_input("Personas", 1, 20, 2)
+    dias = st.number_input("Días", 1, 60, 3)
+    reserva = st.number_input("Reserva alojamiento (€)", 0.0, 50000.0, 150.0, 10.0)
+    comida_total = st.number_input("Comida total (€)", 0.0, 50000.0, 200.0, 10.0)
 
-    st.markdown("---")
     st.markdown("### 📅 Planificación")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
@@ -246,136 +276,86 @@ with st.sidebar:
         fecha_vuelta = st.date_input("Fecha Vuelta", value=None)
     estado_viaje = st.selectbox("Estado del Viaje", ["Planificado", "Reservado", "Realizado"])
 
-    st.markdown("---")
     st.markdown("### 💸 Gastos Extra")
-    col_ge1, col_ge2, col_ge3 = st.columns([2, 1, 1])
+    col_ge1, col_ge2 = st.columns([2, 1])
     with col_ge1:
-        ge_nombre = st.text_input("Concepto", placeholder="Peaje, Regalos...", key="ge_nom")
+        ge_nombre = st.text_input("Concepto", key="ge_nom")
     with col_ge2:
         ge_cantidad = st.number_input("€", 0.0, 50000.0, 0.0, 5.0, key="ge_cant")
-    with col_ge3:
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("➕ Añadir", key="add_ge") and ge_nombre.strip():
-            st.session_state.gastos_extra_list.append({"nombre": ge_nombre.strip(), "cantidad": ge_cantidad})
-            st.rerun()
+    
+    if st.button("➕ Añadir Extra", use_container_width=True) and ge_nombre.strip():
+        st.session_state.gastos_extra_list.append({"nombre": ge_nombre.strip(), "cantidad": ge_cantidad})
+        st.rerun()
 
     for i, ge in enumerate(st.session_state.gastos_extra_list):
         col_gx1, col_gx2 = st.columns([3, 1])
         with col_gx1:
-            st.caption(f"📎 {ge['nombre']}: {ge['cantidad']:.2f} €")
+            st.caption(f"{ge['nombre']}: {ge['cantidad']:.2f} €")
         with col_gx2:
             if st.button("❌", key=f"del_ge_{i}"):
                 st.session_state.gastos_extra_list.pop(i)
                 st.rerun()
 
     total_extras = sum(g["cantidad"] for g in st.session_state.gastos_extra_list)
-    if total_extras > 0:
-        st.info(f"Total extras: **{total_extras:.2f} €**")
-
-    st.markdown("---")
 
     btn_calcular = st.button("🚀 Calcular y Guardar Opción", use_container_width=True, type="primary")
 
+    st.markdown("---")
+    
+    # ── Mover gestión de usuario abajo del todo ──
+    with st.expander("👤 Gestión de Cuenta"):
+        st.markdown("#### Cambiar Contraseña")
+        with st.form("change_pass_form"):
+            nueva_pass = st.text_input("Nueva Contraseña", type="password")
+            if st.form_submit_button("Actualizar", use_container_width=True):
+                if nueva_pass:
+                    db_manager.cambiar_password(user_actual["id"], nueva_pass)
+                    st.success("Actualizada.")
+                else:
+                    st.error("Vacío.")
+                    
+        st.markdown("#### Unirse a un Viaje Colaborativo")
+        codigo_union = st.text_input("Código de Invitación", placeholder="Ej: A1B2C3D4")
+        if st.button("Unirse al Viaje", use_container_width=True) and codigo_union:
+            res = db_manager.unirse_a_viaje(user_actual["id"], codigo_union.strip())
+            if "success" in res:
+                st.success("¡Te has unido al viaje!")
+                st.rerun()
+            else:
+                st.error(res["error"])
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🚪 Cerrar Sesión", use_container_width=True, type="primary"):
+            st.session_state.usuario_actual = None
+            st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MAPA INTERACTIVO
+# TABS PRINCIPALES
 # ═══════════════════════════════════════════════════════════════════════════
 
-tab_mapa, tab_dashboard, tab_aloj, tab_ia = st.tabs(["🗺️ Mapa", "📊 Comparador", "🏨 Mis Alojamientos", "🤖 Veredicto IA"])
+tabs_names = ["🗺️ Mapa", "📊 Dashboard Viajes", "📅 Planificador Itinerario", "🏨 Alojamientos", "🤖 Veredicto IA"]
+if es_admin:
+    tabs_names.append("🛡️ Panel Admin")
 
-with tab_mapa:
-    st.markdown("#### Selecciona origen y destino en el mapa")
+tabs = st.tabs(tabs_names)
+tab_mapa = tabs[0]
+tab_dashboard = tabs[1]
+tab_itinerario = tabs[2]
+tab_aloj = tabs[3]
+tab_ia = tabs[4]
+if es_admin:
+    tab_admin = tabs[5]
 
-    # Centro del mapa: entre A y B si existen, sino España
-    if pa and pb:
-        center = [(pa["lat"] + pb["lat"]) / 2, (pa["lng"] + pb["lng"]) / 2]
-        zoom = 6
-    elif pa:
-        center = [pa["lat"], pa["lng"]]
-        zoom = 8
-    elif pb:
-        center = [pb["lat"], pb["lng"]]
-        zoom = 8
-    else:
-        center = [40.4168, -3.7038]  # Madrid
-        zoom = 6
-
-    m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB dark_matter")
-
-    if pa:
-        folium.Marker(
-            [pa["lat"], pa["lng"]],
-            tooltip="📌 Origen (A)",
-            icon=folium.Icon(color="blue", icon="home", prefix="fa"),
-        ).add_to(m)
-
-    if pb:
-        folium.Marker(
-            [pb["lat"], pb["lng"]],
-            tooltip="🎯 Destino (B)",
-            icon=folium.Icon(color="red", icon="flag", prefix="fa"),
-        ).add_to(m)
-
-    # Dibujar ruta si existen ambos puntos
-    if pa and pb:
-        ruta = obtener_ruta_osrm(pa["lat"], pa["lng"], pb["lat"], pb["lng"])
-        if ruta and ruta.get("geometria"):
-            coords = ruta["geometria"]["coordinates"]
-            folium.PolyLine(
-                locations=[[c[1], c[0]] for c in coords],
-                color="#667eea", weight=4, opacity=0.8,
-            ).add_to(m)
-
-    map_data = st_folium(m, width=None, height=500, returned_objects=["last_clicked"])
-
-    # Procesar clic en el mapa
-    if map_data and map_data.get("last_clicked"):
-        click = map_data["last_clicked"]
-        if st.session_state.seleccionando == "A":
-            st.session_state.punto_a = click
-        else:
-            st.session_state.punto_b = click
-        st.rerun()
-
-    # Widget del clima si hay destino
-    if pb:
-        clima = weather_helper.obtener_clima(pb["lat"], pb["lng"])
-        if clima:
-            st.markdown("---")
-            st.markdown("#### 🌤️ Clima actual en destino")
-            col_w1, col_w2, col_w3 = st.columns(3)
-            with col_w1:
-                st.metric("Temperatura", f"{clima['temp_c']} °C")
-            with col_w2:
-                st.metric("Estado", clima['descripcion'].capitalize() if clima['descripcion'] else "—")
-            with col_w3:
-                st.metric("Humedad", f"{clima['humedad']} %")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# LÓGICA DE CÁLCULO Y GUARDADO
-# ═══════════════════════════════════════════════════════════════════════════
-
+# ── LÓGICA DE GUARDADO DEL FORMULARIO ──
 if btn_calcular:
-    pa = st.session_state.punto_a
-    pb = st.session_state.punto_b
-
     if not pa or not pb:
-        st.error("⚠️ Selecciona Origen (A) y Destino (B) en el mapa o por dirección.")
+        st.error("⚠️ Selecciona Origen y Destino.")
     elif not nombre.strip():
-        st.error("⚠️ Escribe un nombre para esta opción de viaje.")
+        st.error("⚠️ Escribe un nombre.")
     else:
         ruta = obtener_ruta_osrm(pa["lat"], pa["lng"], pb["lat"], pb["lng"])
-
-        if ruta:
-            dist_ida = ruta["distancia_km"]
-            tiempo = ruta["tiempo_min"]
-        else:
-            # Fallback: distancia lineal con geopy
-            from geopy.distance import geodesic
-            dist_ida = round(geodesic((pa["lat"], pa["lng"]), (pb["lat"], pb["lng"])).km, 2)
-            tiempo = None
-            st.warning("⚠️ OSRM no disponible. Se usa distancia lineal aproximada.")
+        dist_ida = ruta["distancia_km"] if ruta else 0
+        tiempo = ruta["tiempo_min"] if ruta else 0
 
         costes = calcular_costes(dist_ida, consumo, precio_comb, personas, reserva, comida_total, total_extras)
 
@@ -403,46 +383,94 @@ if btn_calcular:
             "alojamiento_id": aloj_id_vinculado,
             "gastos_extra": json.dumps(st.session_state.gastos_extra_list, ensure_ascii=False),
             "gasto_extras": costes["gasto_extras"],
+            "itinerario": "{}"
         }
 
-        viaje_id = db_manager.guardar_viaje(datos)
-        st.session_state.last_calc = datos
-        st.success(f"✅ Opción **{nombre}** guardada correctamente (ID: {viaje_id})")
-        st.balloons()
-
-# Mostrar resumen del último cálculo
-if st.session_state.last_calc:
-    lc = st.session_state.last_calc
-    st.markdown("### 📋 Último cálculo")
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1:
-        st.markdown(f'<div class="metric-card"><h3>⛽ Gasolina</h3><p>{lc["gasto_gasolina"]:.2f} €</p></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="metric-card"><h3>🍽️ Comida</h3><p>{lc["gasto_comida"]:.2f} €</p></div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'<div class="metric-card"><h3>💸 Extras</h3><p>{lc.get("gasto_extras", 0):.2f} €</p></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="metric-card"><h3>💰 Total</h3><p>{lc["coste_total"]:.2f} €</p></div>', unsafe_allow_html=True)
-    with c5:
-        st.markdown(f'<div class="metric-card"><h3>👤 Por Persona</h3><p>{lc["coste_persona"]:.2f} €</p></div>', unsafe_allow_html=True)
+        viaje_id = db_manager.guardar_viaje(datos, user_actual["id"])
+        st.success(f"✅ Opción guardada. Código para invitar amigos: **{datos['codigo_compartido']}**")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TAB — DASHBOARD COMPARADOR
-# ═══════════════════════════════════════════════════════════════════════════
+# =================================================================================
+# TAB - MAPA
+# =================================================================================
+with tab_mapa:
+    if pa and pb:
+        center = [(pa["lat"] + pb["lat"]) / 2, (pa["lng"] + pb["lng"]) / 2]
+        zoom = 6
+    elif pa: center, zoom = [pa["lat"], pa["lng"]], 8
+    elif pb: center, zoom = [pb["lat"], pb["lng"]], 8
+    else: center, zoom = [40.4168, -3.7038], 6
+
+    m = folium.Map(location=center, zoom_start=zoom, tiles="CartoDB dark_matter")
+    if pa: folium.Marker([pa["lat"], pa["lng"]], tooltip="📌 Origen", icon=folium.Icon(color="blue", icon="home", prefix="fa")).add_to(m)
+    if pb: folium.Marker([pb["lat"], pb["lng"]], tooltip="🎯 Destino", icon=folium.Icon(color="red", icon="flag", prefix="fa")).add_to(m)
+
+    if pa and pb:
+        ruta = obtener_ruta_osrm(pa["lat"], pa["lng"], pb["lat"], pb["lng"])
+        if ruta and ruta.get("geometria"):
+            coords = ruta["geometria"]["coordinates"]
+            folium.PolyLine(locations=[[c[1], c[0]] for c in coords], color="#667eea", weight=4).add_to(m)
+
+    map_data = st_folium(m, width=None, height=500, returned_objects=["last_clicked"])
+
+    if map_data and map_data.get("last_clicked"):
+        click = map_data["last_clicked"]
+        if st.session_state.seleccionando == "A": st.session_state.punto_a = click
+        else: st.session_state.punto_b = click
+        st.rerun()
+
+# =================================================================================
+# TAB - DASHBOARD VIAJES
+# =================================================================================
+viajes_usuario = db_manager.obtener_viajes(user_actual["id"], es_admin)
 
 with tab_dashboard:
-    st.markdown("### 📊 Comparación de Opciones Guardadas")
+    st.markdown("### 📊 Mis Viajes y Viajes Compartidos")
+    
+    with st.expander("📥 Importar Viajes desde Excel"):
+        archivo_excel = st.file_uploader("Sube tu archivo .xlsx (descargado previamente)", type=["xlsx"])
+        if archivo_excel and st.button("Importar Datos"):
+            try:
+                df = pd.read_excel(archivo_excel)
+                importados = 0
+                for index, row in df.iterrows():
+                    datos = {
+                        "nombre": str(row["Nombre"]),
+                        "origen": "Origen importado",
+                        "destino": str(row["Destino"]),
+                        "distancia_km": float(row["Dist. I/V (km)"]),
+                        "tiempo_min": float(row.get("Tiempo I/V (min)", 0)),
+                        "consumo_l100": 7.0,
+                        "precio_comb": 1.55,
+                        "num_personas": int(row["Personas"]),
+                        "num_dias": int(row["Días"]),
+                        "precio_reserva": float(row["Reserva (€)"]),
+                        "ppto_comida": float(row["Comida (€)"]),
+                        "gasto_gasolina": float(row["Gasolina (€)"]),
+                        "gasto_comida": float(row["Comida (€)"]),
+                        "gasto_extras": float(row["Extras (€)"]),
+                        "coste_total": float(row["Total (€)"]),
+                        "coste_persona": float(row["Por Persona (€)"]),
+                        "estado": str(row["Estado"]),
+                        "gastos_extra": "[]",
+                        "itinerario": "{}"
+                    }
+                    db_manager.guardar_viaje(datos, user_actual["id"])
+                    importados += 1
+                st.success(f"✅ ¡Se han importado {importados} viajes exitosamente!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al leer el archivo: {e}")
 
-    viajes = db_manager.obtener_viajes()
-
-    if not viajes:
-        st.info("🗂️ Aún no hay opciones guardadas. Usa el formulario del sidebar para añadir una.")
+    if not viajes_usuario:
+        st.info("No tienes viajes todavía.")
     else:
-        df = pd.DataFrame(viajes)
+        # Restaurar tabla y gráficos
+        df = pd.DataFrame(viajes_usuario)
         if "gasto_extras" not in df.columns:
             df["gasto_extras"] = 0.0
         df["gasto_extras"] = df["gasto_extras"].fillna(0)
+        
         df_display = df[[
             "id", "nombre", "destino", "fecha_ida", "fecha_vuelta", "estado", "distancia_km", "tiempo_min",
             "precio_reserva", "gasto_gasolina", "gasto_comida", "gasto_extras",
@@ -455,16 +483,13 @@ with tab_dashboard:
             "Total (€)", "Por Persona (€)", "Personas", "Días",
         ]
 
-        # Resaltar el más barato
         st.dataframe(
             df_display.style.highlight_min(subset=["Total (€)", "Por Persona (€)"], color="#2d5a27"),
             use_container_width=True,
             hide_index=True,
         )
 
-        # Exportar a Excel y PDF
         col_ex, col_pdf = st.columns(2)
-        
         with col_ex:
             excel_buffer = BytesIO()
             df_display.to_excel(excel_buffer, index=False, engine="openpyxl")
@@ -477,7 +502,7 @@ with tab_dashboard:
             )
             
         with col_pdf:
-            trip_names = {f"{v['nombre']} (ID: {v['id']})": v for v in viajes}
+            trip_names = {f"{v['nombre']} (ID: {v['id']})": v for v in viajes_usuario}
             selected_pdf = st.selectbox("Selecciona viaje para PDF", list(trip_names.keys()), label_visibility="collapsed")
             if selected_pdf:
                 viaje_pdf = trip_names[selected_pdf]
@@ -485,131 +510,142 @@ with tab_dashboard:
                 st.download_button(
                     "📄 Descargar Informe PDF",
                     data=pdf_bytes,
-                    file_name=f"informe_viaje_{viaje_pdf['nombre'].replace(' ', '_').lower()}.pdf",
+                    file_name=f"informe_{viaje_pdf['nombre'].replace(' ', '_').lower()}.pdf",
                     mime="application/pdf",
                     use_container_width=True
                 )
 
-        # Gráfico de barras agrupadas (Altair)
-        if len(viajes) >= 1:
-            chart_df = df_display[["Nombre", "Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)"]].copy()
-            chart_df["Nombre"] = chart_df["Nombre"] + " (" + df_display["ID"].astype(str) + ")"
-            chart_melted = chart_df.melt(id_vars="Nombre", var_name="Concepto", value_name="Coste (€)")
+        # Gráfico Circular
+        chart_df = df_display[["Nombre", "Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)"]].copy()
+        chart_df["Nombre"] = chart_df["Nombre"] + " (" + df_display["ID"].astype(str) + ")"
+        chart_melted = chart_df.melt(id_vars="Nombre", var_name="Concepto", value_name="Coste (€)")
 
-            chart = alt.Chart(chart_melted).mark_arc(innerRadius=50).encode(
-                theta=alt.Theta("Coste (€):Q"),
-                color=alt.Color("Concepto:N", scale=alt.Scale(
-                    domain=["Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)"],
-                    range=["#667eea", "#e74c8b", "#f0a500", "#22d3ee"]
-                )),
-                tooltip=["Concepto:N", "Coste (€):Q"]
-            ).properties(width=200, height=200).facet(
-                column=alt.Column("Nombre:N", header=alt.Header(title=None, labelOrient="bottom", labelFontSize=14))
-            ).properties(title="Desglose Circular de Costes por Opción")
+        chart = alt.Chart(chart_melted).mark_arc(innerRadius=50).encode(
+            theta=alt.Theta("Coste (€):Q"),
+            color=alt.Color("Concepto:N", scale=alt.Scale(
+                domain=["Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)"],
+                range=["#667eea", "#e74c8b", "#f0a500", "#22d3ee"]
+            )),
+            tooltip=["Concepto:N", "Coste (€):Q"]
+        ).properties(width=200, height=200).facet(
+            column=alt.Column("Nombre:N", header=alt.Header(title=None, labelOrient="bottom", labelFontSize=14))
+        ).properties(title="Desglose Circular de Costes")
 
-            st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
-        # Botones de gestión
         st.markdown("---")
-        col_del1, col_del2, col_upd1, col_upd2 = st.columns([2, 1, 2, 1])
-        with col_del1:
-            ids_disponibles = [v["id"] for v in viajes]
-            id_eliminar = st.selectbox("ID a eliminar", ids_disponibles)
-        with col_del2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("🗑️ Eliminar", type="secondary", use_container_width=True):
-                db_manager.eliminar_viaje(id_eliminar)
-                st.success(f"Opción ID {id_eliminar} eliminada.")
-                st.rerun()
-        with col_upd1:
-            id_estado = st.selectbox("ID a actualizar estado", ids_disponibles)
-            nuevo_estado = st.selectbox("Nuevo Estado", ["Planificado", "Reservado", "Realizado"])
-        with col_upd2:
-            st.markdown("<br><br>", unsafe_allow_html=True)
-            if st.button("🔄 Actualizar", type="secondary", use_container_width=True):
-                db_manager.actualizar_estado(id_estado, nuevo_estado)
-                st.success(f"Estado de ID {id_estado} actualizado a {nuevo_estado}.")
-                st.rerun()
-
-        if st.button("🧹 Limpiar todo", type="secondary"):
-            db_manager.limpiar_viajes()
-            st.success("Todas las opciones eliminadas.")
-            st.rerun()
-
-        with st.expander("✏️ Editar Detalles de una Opción"):
-            id_editar = st.selectbox("Selecciona ID a editar", ids_disponibles, key="sel_editar")
-            viaje_editar = next((v for v in viajes if v["id"] == id_editar), None)
-            if viaje_editar:
-                with st.form("form_editar_viaje"):
-                    st.markdown(f"**Editando: {viaje_editar['nombre']}**")
-                    col_e1, col_e2 = st.columns(2)
-                    with col_e1:
-                        e_nombre = st.text_input("Nombre", value=viaje_editar["nombre"])
-                        e_personas = st.number_input("Personas", 1, 20, int(viaje_editar["num_personas"]))
-                        e_dias = st.number_input("Días", 1, 60, int(viaje_editar["num_dias"]))
-                        e_reserva = st.number_input("Reserva (€)", 0.0, 50000.0, float(viaje_editar["precio_reserva"]))
-                    with col_e2:
-                        e_comida = st.number_input("Comida Total (€)", 0.0, 50000.0, float(viaje_editar["ppto_comida"]))
-                        e_consumo = st.number_input("Consumo (L/100km)", 1.0, 30.0, float(viaje_editar["consumo_l100"]))
-                        e_precio_comb = st.number_input("Combustible (€/L)", 0.5, 3.0, float(viaje_editar["precio_comb"]))
-                        e_extras = st.number_input("Extras (€)", 0.0, 50000.0, float(viaje_editar.get("gasto_extras", 0)))
-                    
-                    if st.form_submit_button("Guardar Cambios", type="primary", use_container_width=True):
-                        ida_vuelta = float(viaje_editar["distancia_km"]) * 2
-                        gasto_gasolina = (ida_vuelta / 100) * e_consumo * e_precio_comb
-                        coste_total = gasto_gasolina + e_reserva + e_comida + e_extras
-                        coste_persona = coste_total / max(e_personas, 1)
-
-                        nuevos_datos = {
-                            "nombre": e_nombre.strip(),
-                            "consumo_l100": e_consumo,
-                            "precio_comb": e_precio_comb,
-                            "num_personas": e_personas,
-                            "num_dias": e_dias,
-                            "precio_reserva": e_reserva,
-                            "ppto_comida": e_comida,
-                            "gasto_gasolina": round(gasto_gasolina, 2),
-                            "gasto_comida": e_comida,
-                            "gasto_extras": e_extras,
-                            "coste_total": round(coste_total, 2),
-                            "coste_persona": round(coste_persona, 2)
-                        }
-                        db_manager.actualizar_viaje(id_editar, nuevos_datos)
-                        st.success("✅ Opción actualizada.")
+        st.markdown("#### Detalles de los Viajes y Miembros")
+        for v in viajes_usuario:
+            colabs = db_manager.obtener_colaboradores(v["id"])
+            colabs_str = ", ".join([f"{c['username']} ({c['rol']})" for c in colabs])
+            
+            with st.expander(f"🛫 {v['nombre']} | {v['estado']} | Total: {v['coste_total']:.2f}€"):
+                st.markdown(f"**Destino:** {v['destino']} | **Días:** {v['num_dias']} | **Personas:** {v['num_personas']}")
+                st.markdown(f"🔑 **Código de Invitación:** `{v.get('codigo_compartido', 'N/A')}`")
+                st.markdown(f"👥 **Miembros:** {colabs_str}")
+                
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    nuevo_est = st.selectbox("Cambiar Estado", ["Planificado", "Reservado", "Realizado"], index=["Planificado", "Reservado", "Realizado"].index(v["estado"]), key=f"est_{v['id']}")
+                    if st.button("Actualizar", key=f"upd_est_{v['id']}"):
+                        db_manager.actualizar_estado(v['id'], nuevo_est)
+                        st.rerun()
+                with c3:
+                    if st.button("🗑️ Eliminar Viaje", key=f"del_{v['id']}"):
+                        db_manager.eliminar_viaje(v['id'])
                         st.rerun()
 
+# =================================================================================
+# TAB - PLANIFICADOR ITINERARIO (CALENDARIO)
+# =================================================================================
+with tab_itinerario:
+    st.markdown("### 📅 Calendario del Viaje (Solo viajes Reservados)")
+    viajes_reservados = [v for v in viajes_usuario if v["estado"] == "Reservado"]
+    if not viajes_reservados:
+        st.info("No tienes viajes en estado 'Reservado'. Cambia el estado de un viaje en el Dashboard para empezar a planificar su calendario.")
+    else:
+        trip_sel = st.selectbox("Selecciona un viaje reservado", [f"{v['nombre']} (ID: {v['id']})" for v in viajes_reservados])
+        trip_data = next(v for v in viajes_reservados if f"{v['nombre']} (ID: {v['id']})" == trip_sel)
+        
+        num_dias = int(trip_data["num_dias"])
+        st.markdown(f"Planificando **{num_dias} días** en {trip_data['destino']}")
+        
+        # Cargar itinerario (si existe)
+        itinerario_guardado = {}
+        if trip_data.get("itinerario") and trip_data["itinerario"] != "{}":
+            try:
+                itinerario_guardado = json.loads(trip_data["itinerario"])
+            except: pass
+            
+        col_it1, col_it2 = st.columns([3, 1])
+        with col_it2:
+            if st.button("🔄 Refrescar Cambios", use_container_width=True):
+                st.rerun()
+                
+        # Crear estructura base de horas
+        horas = [f"{str(h).zfill(2)}:00" for h in range(8, 24)]
+        columnas_dias = [f"Día {d}" for d in range(1, num_dias + 1)]
+        
+        # Preparar datos iniciales para el grid
+        data_grid = {"Hora": horas}
+        for dia in columnas_dias:
+            # Si hay datos guardados para ese dia y esa hora, los carga. Si no, vacío.
+            datos_dia = itinerario_guardado.get(dia, {})
+            data_grid[dia] = [datos_dia.get(hora, "") for hora in horas]
+            
+        df_itinerario = pd.DataFrame(data_grid)
+        
+        st.markdown("📝 **Haz doble clic en una celda para editarla:**")
+        # Mostrar como grid editable
+        edited_df = st.data_editor(
+            df_itinerario, 
+            hide_index=True, 
+            use_container_width=True,
+            disabled=["Hora"] # No permitir editar la columna de Horas
+        )
+        
+        if st.button("💾 Guardar Calendario", type="primary"):
+            # Convertir el DataFrame editado de vuelta a un diccionario JSON
+            nuevo_itinerario = {}
+            for dia in columnas_dias:
+                nuevo_itinerario[dia] = {}
+                for idx, row in edited_df.iterrows():
+                    if pd.notna(row[dia]) and str(row[dia]).strip() != "":
+                        nuevo_itinerario[dia][row["Hora"]] = str(row[dia])
+            
+            db_manager.actualizar_itinerario(trip_data["id"], json.dumps(nuevo_itinerario, ensure_ascii=False))
+            st.success("✅ Calendario guardado correctamente.")
+            import time
+            time.sleep(1)
+            st.rerun()
 
-# ═══════════════════════════════════════════════════════════════════════════
-# TAB — MIS ALOJAMIENTOS
-# ═══════════════════════════════════════════════════════════════════════════
 
+# =================================================================================
+# TAB - ALOJAMIENTOS
+# =================================================================================
 with tab_aloj:
     st.markdown("### 🏨 Mis Alojamientos — Base de Datos Personal")
-    st.caption("Guarda alojamientos con ubicación, precio y tu reseña personal para saber si repetir.")
-
-    # ── Formulario para añadir alojamiento ────────────────────────────────
+    
     with st.expander("➕ Añadir nuevo alojamiento", expanded=False):
         col_a1, col_a2 = st.columns(2)
         with col_a1:
-            aloj_nombre = st.text_input("Nombre del alojamiento", placeholder="Ej: Hotel Mar Azul", key="aloj_nom")
-            aloj_ubicacion = st.text_input("Ubicación / Dirección", placeholder="Ej: Valencia, España", key="aloj_ubi")
-            aloj_tipo = st.selectbox("Tipo", ["Apartamento", "Hotel", "Hostal", "Casa rural", "Camping", "Airbnb", "Otro"], key="aloj_tipo")
-            aloj_plataforma = st.text_input("Plataforma", placeholder="Ej: Booking, Airbnb...", key="aloj_plat")
+            aloj_nombre = st.text_input("Nombre del alojamiento", key="aloj_nom")
+            aloj_ubicacion = st.text_input("Ubicación", key="aloj_ubi")
+            aloj_tipo = st.selectbox("Tipo", ["Apartamento", "Hotel", "Hostal", "Casa rural", "Airbnb", "Otro"], key="aloj_tipo")
+            aloj_plataforma = st.text_input("Plataforma", key="aloj_plat")
         with col_a2:
-            aloj_precio = st.number_input("Precio por noche (€)", 0.0, 10000.0, 60.0, 5.0, key="aloj_precio")
+            aloj_precio = st.number_input("Precio noche (€)", 0.0, 10000.0, 60.0, 5.0, key="aloj_precio")
             aloj_puntuacion = st.slider("Tu puntuación", 1, 5, 3, key="aloj_punt")
             aloj_repetir = st.toggle("¿Repetirías?", value=True, key="aloj_rep")
-            aloj_url = st.text_input("URL (opcional)", placeholder="https://...", key="aloj_url")
-            aloj_color = st.color_picker("Color en el mapa", value="#667eea", key="aloj_color")
+            aloj_color = st.color_picker("Color en mapa", value="#667eea", key="aloj_color")
 
-        aloj_resena = st.text_area("Tu reseña personal", placeholder="¿Qué tal fue la experiencia? ¿Limpieza, ubicación, trato...?", key="aloj_res")
-        aloj_notas = st.text_input("Notas privadas", placeholder="Ej: Pedir habitación con vistas, evitar planta baja...", key="aloj_not")
+        aloj_resena = st.text_area("Reseña", key="aloj_res")
+        aloj_notas = st.text_input("Notas privadas", key="aloj_not")
 
-        if st.button("💾 Guardar Alojamiento", type="primary", use_container_width=True, key="btn_aloj"):
+        if st.button("💾 Guardar Alojamiento", type="primary", use_container_width=True):
             if not aloj_nombre.strip() or not aloj_ubicacion.strip():
                 st.error("⚠️ Nombre y ubicación son obligatorios.")
             else:
-                # Intentar geocodificar para guardar coordenadas
                 geo_result = geocodificar(aloj_ubicacion)
                 lat = geo_result[0] if geo_result else None
                 lon = geo_result[1] if geo_result else None
@@ -623,19 +659,15 @@ with tab_aloj:
                     "puntuacion": aloj_puntuacion,
                     "resena": aloj_resena.strip(),
                     "repetir": int(aloj_repetir),
-                    "url": aloj_url.strip(),
                     "plataforma": aloj_plataforma.strip(),
                     "notas": aloj_notas.strip(),
                     "color": aloj_color,
                 }
-                aloj_id = db_manager.guardar_alojamiento(datos_aloj)
-                st.success(f"✅ **{aloj_nombre}** guardado (ID: {aloj_id})")
+                db_manager.guardar_alojamiento(datos_aloj, user_actual["id"])
+                st.success("✅ Alojamiento guardado.")
                 st.rerun()
 
-    # ── Mapa de alojamientos ─────────────────────────────────────────────
-    alojamientos = db_manager.obtener_alojamientos()
-    alojs_con_coords = [a for a in alojamientos if a.get("lat") and a.get("lon")]
-
+    alojs_con_coords = [a for a in mis_alojs if a.get("lat") and a.get("lon")]
     if alojs_con_coords:
         st.markdown("#### 🗺️ Mapa de mis alojamientos")
         center_aloj = [sum(a["lat"] for a in alojs_con_coords) / len(alojs_con_coords),
@@ -644,128 +676,78 @@ with tab_aloj:
         for a in alojs_con_coords:
             color_hex = a.get("color", "#667eea")
             estrellas_tip = "⭐" * a["puntuacion"]
-            tip = f"{a['nombre']} — {a['precio_noche']:.0f}€/noche {estrellas_tip}"
+            tip = f"{a['nombre']} — {a['precio_noche']:.0f}€/n {estrellas_tip}"
             folium.CircleMarker(
-                location=[a["lat"], a["lon"]],
-                radius=10, color=color_hex, fill=True,
-                fill_color=color_hex, fill_opacity=0.8,
-                tooltip=tip,
+                location=[a["lat"], a["lon"]], radius=10, color=color_hex, fill=True,
+                fill_color=color_hex, fill_opacity=0.8, tooltip=tip,
             ).add_to(m_aloj)
         st_folium(m_aloj, width=None, height=400, key="mapa_aloj", returned_objects=[])
 
-    # ── Listado de alojamientos ───────────────────────────────────────────
-    if not alojamientos:
-        st.info("🗂️ No hay alojamientos guardados. Usa el formulario de arriba para añadir uno.")
+    if not mis_alojs:
+        st.info("🗂️ No hay alojamientos guardados.")
     else:
-        # Filtros
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1:
-            filtro_tipo = st.multiselect("Filtrar por tipo", list(set(a["tipo"] for a in alojamientos)), key="f_tipo")
-        with col_f2:
-            filtro_punt = st.slider("Puntuación mínima", 1, 5, 1, key="f_punt")
-        with col_f3:
-            filtro_rep = st.selectbox("Repetir", ["Todos", "Sí repetiría", "No repetiría"], key="f_rep")
-
-        # Aplicar filtros
-        filtered = alojamientos
-        if filtro_tipo:
-            filtered = [a for a in filtered if a["tipo"] in filtro_tipo]
-        filtered = [a for a in filtered if a["puntuacion"] >= filtro_punt]
-        if filtro_rep == "Sí repetiría":
-            filtered = [a for a in filtered if a["repetir"]]
-        elif filtro_rep == "No repetiría":
-            filtered = [a for a in filtered if not a["repetir"]]
-
-        st.markdown(f"**{len(filtered)}** alojamiento(s) encontrado(s)")
-
-        # Renderizar tarjetas
-        for aloj in filtered:
+        st.markdown(f"**{len(mis_alojs)}** alojamiento(s) en tu cuenta.")
+        for aloj in mis_alojs:
             estrellas = "⭐" * aloj["puntuacion"] + "☆" * (5 - aloj["puntuacion"])
             badge_class = "badge-yes" if aloj["repetir"] else "badge-no"
             badge_text = "✅ Repetiría" if aloj["repetir"] else "❌ No repetiría"
 
-            url_link = ""
-            if aloj.get("url"):
-                url_link = f' · <a href="{aloj["url"]}" target="_blank" style="color:#667eea;">🔗 Ver enlace</a>'
-
-            review_html = ""
-            if aloj.get("resena"):
-                review_html = f'<div class="aloj-review">💬 "{aloj["resena"]}"</div>'
-
-            notes_html = ""
-            if aloj.get("notas"):
-                notes_html = f'<div class="aloj-notes">📝 {aloj["notas"]}</div>'
-
-            st.markdown(f"""
+            st.markdown(f'''
             <div class="aloj-card">
                 <h4>{aloj["nombre"]} <span class="badge-repeat {badge_class}">{badge_text}</span></h4>
-                <div class="aloj-meta">
-                    📍 {aloj["ubicacion"]} · 🏷️ {aloj["tipo"]}
-                    {f' · 🌐 {aloj["plataforma"]}' if aloj.get("plataforma") else ''}
-                    {url_link}
-                </div>
+                <div class="aloj-meta">📍 {aloj["ubicacion"]} · 🏷️ {aloj["tipo"]} · 🌐 {aloj["plataforma"]}</div>
                 <span class="aloj-price">{aloj["precio_noche"]:.0f} €/noche</span>
                 <span style="margin-left:1rem;">{estrellas}</span>
-                {review_html}
-                {notes_html}
+                <div class="aloj-review">💬 "{aloj.get("resena", "")}"</div>
+                <div class="aloj-notes">📝 {aloj.get("notas", "")}</div>
             </div>
-            """, unsafe_allow_html=True)
+            ''', unsafe_allow_html=True)
 
-            # Botones de acción por alojamiento
             col_e1, col_e2 = st.columns([4, 1])
             with col_e2:
-                if st.button("🗑️", key=f"del_aloj_{aloj['id']}", help="Eliminar alojamiento"):
+                if st.button("🗑️", key=f"del_aloj_{aloj['id']}"):
                     db_manager.eliminar_alojamiento(aloj["id"])
                     st.rerun()
-            with col_e1:
-                with st.expander(f"✏️ Editar reseña — {aloj['nombre']}", expanded=False):
-                    new_punt = st.slider("Puntuación", 1, 5, aloj["puntuacion"], key=f"ep_{aloj['id']}")
-                    new_res = st.text_area("Reseña", value=aloj.get("resena", ""), key=f"er_{aloj['id']}")
-                    new_rep = st.toggle("¿Repetirías?", value=bool(aloj["repetir"]), key=f"erp_{aloj['id']}")
-                    new_notas = st.text_input("Notas", value=aloj.get("notas", ""), key=f"en_{aloj['id']}")
-                    if st.button("💾 Actualizar", key=f"upd_{aloj['id']}", use_container_width=True):
-                        db_manager.actualizar_resena(aloj["id"], new_punt, new_res.strip(), new_rep, new_notas.strip())
-                        st.success("✅ Reseña actualizada")
-                        st.rerun()
 
-        # Limpiar todos
-        st.markdown("---")
-        if st.button("🧹 Eliminar todos los alojamientos", type="secondary", key="limpiar_aloj"):
-            db_manager.limpiar_alojamientos()
-            st.success("Todos los alojamientos eliminados.")
-            st.rerun()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# TAB — VEREDICTO IA
-# ═══════════════════════════════════════════════════════════════════════════
-
+# =================================================================================
+# TAB - VEREDICTO IA
+# =================================================================================
 with tab_ia:
     st.markdown("### 🤖 Veredicto de Inteligencia Artificial")
-    st.caption("Powered by Groq — Llama 3.1")
-
-    viajes_ia = db_manager.obtener_viajes()
-
-    if len(viajes_ia) < 2:
-        st.info("📌 Necesitas al menos **2 opciones** guardadas para generar un veredicto.")
+    if len(viajes_usuario) >= 2:
+        if st.button("✨ Generar Veredicto", type="primary"):
+            st.info("Llamando a Groq API...")
+            # ai_helper.generar_veredicto(viajes_usuario[:2]) # Demo
     else:
-        # Selector de opciones a comparar
-        opciones_disponibles = {f"{v['nombre']} (ID:{v['id']})": v for v in viajes_ia}
-        seleccionadas = st.multiselect(
-            "Selecciona las opciones que quieres comparar",
-            options=list(opciones_disponibles.keys()),
-            default=list(opciones_disponibles.keys()),
-            key="ia_seleccion",
-        )
+        st.info("Necesitas al menos 2 viajes para comparar.")
 
-        viajes_filtrados = [opciones_disponibles[s] for s in seleccionadas]
-
-        if len(viajes_filtrados) < 2:
-            st.warning("⚠️ Selecciona al menos **2 opciones** para comparar.")
-        else:
-            st.markdown(f"Se compararán **{len(viajes_filtrados)}** opciones de viaje.")
-
-            if st.button("✨ Generar Veredicto con IA", type="primary", use_container_width=True):
-                with st.spinner("🧠 Analizando opciones con Llama 3.1..."):
-                    veredicto = ai_helper.generar_veredicto(viajes_filtrados)
-                st.markdown(f'<div class="ai-box">{veredicto}</div>', unsafe_allow_html=True)
+# =================================================================================
+# TAB - PANEL ADMIN
+# =================================================================================
+if es_admin:
+    with tab_admin:
+        st.markdown("### 🛡️ Panel de Control Administrador")
+        
+        st.markdown("#### Gestión de Usuarios")
+        todos_users = db_manager.obtener_todos_usuarios()
+        for u in todos_users:
+            with st.expander(f"Usuario: {u['username']} | Rol: {u['rol']}"):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    new_rol = st.selectbox("Rol", ["user", "admin"], index=0 if u["rol"]=="user" else 1, key=f"r_{u['id']}")
+                    if st.button("Actualizar Rol", key=f"br_{u['id']}"):
+                        db_manager.cambiar_rol(u["id"], new_rol)
+                        st.rerun()
+                with c2:
+                    new_pass = st.text_input("Nueva Contraseña", key=f"p_{u['id']}", type="password")
+                    if st.button("Forzar Cambio Password", key=f"bp_{u['id']}") and new_pass:
+                        db_manager.cambiar_password(u["id"], new_pass)
+                        st.success("Contraseña cambiada.")
+                with c3:
+                    if st.button("🗑️ Borrar Usuario", key=f"delu_{u['id']}", type="primary"):
+                        db_manager.eliminar_usuario(u["id"])
+                        st.rerun()
+                        
+        st.markdown("#### Todos los Viajes Globales")
+        viajes_global = db_manager.obtener_viajes(0, es_admin=True)
+        st.write(f"Total viajes en el sistema: {len(viajes_global)}")
