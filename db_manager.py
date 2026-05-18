@@ -85,6 +85,12 @@ def cambiar_password(usuario_id: int, nueva_password: str) -> bool:
     res = supabase.table("usuarios").update({"password_hash": hashed}).eq("id", usuario_id).execute()
     return bool(res.data)
 
+def obtener_usuario_por_id(usuario_id: int) -> dict:
+    res = supabase.table("usuarios").select("id, username, rol").eq("id", usuario_id).execute()
+    if res.data:
+        return res.data[0]
+    return None
+
 def obtener_todos_usuarios() -> list:
     res = supabase.table("usuarios").select("id, username, rol, fecha_creacion").order("fecha_creacion").execute()
     return res.data
@@ -222,3 +228,32 @@ def limpiar_alojamientos(usuario_id: int = None, es_admin: bool = False) -> None
         supabase.table("alojamientos").delete().neq("id", 0).execute()
     elif usuario_id:
         supabase.table("alojamientos").delete().eq("creador_id", usuario_id).execute()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NOTIFICACIONES
+# ═══════════════════════════════════════════════════════════════════════════
+
+def crear_notificacion_colaboradores(viaje_id: int, autor_id: int, mensaje: str) -> None:
+    # Buscar todos los colaboradores del viaje que no sean el autor
+    res = supabase.table("viajes_colaboradores").select("usuario_id").eq("viaje_id", viaje_id).execute()
+    if not res.data:
+        return
+    
+    for c in res.data:
+        u_id = c["usuario_id"]
+        if u_id != autor_id:
+            supabase.table("notificaciones").insert({
+                "user_id": u_id,
+                "viaje_id": viaje_id,
+                "mensaje": mensaje
+            }).execute()
+
+def obtener_notificaciones_usuario(user_id: int) -> list:
+    res = supabase.table("notificaciones").select("*").eq("user_id", user_id).eq("leida", False).order("fecha", desc=True).execute()
+    return res.data if res.data else []
+
+def marcar_notificacion_leida(notif_id: int) -> None:
+    supabase.table("notificaciones").update({"leida": True}).eq("id", notif_id).execute()
+
+def marcar_todas_leidas(user_id: int) -> None:
+    supabase.table("notificaciones").update({"leida": True}).eq("user_id", user_id).eq("leida", False).execute()

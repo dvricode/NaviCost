@@ -16,6 +16,8 @@ from io import BytesIO
 import json
 import uuid
 import logging
+from datetime import datetime, date
+import extra_streamlit_components as stx
 
 # Configuración básica de logs para que salgan en consola
 logging.basicConfig(
@@ -37,6 +39,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# El CookieManager ya no se puede cachear con @st.cache_resource desde Streamlit 1.38
+cookie_manager = stx.CookieManager(key="cookie_manager")
 
 # ─── CSS personalizado ───────────────────────────────────────────────────
 st.markdown("""
@@ -176,6 +181,10 @@ def mostrar_pantalla_auth():
                         res = db_manager.verificar_login(user_login, pass_login)
                         if "success" in res:
                             st.session_state.usuario_actual = res["user"]
+                            cookie_manager.set("auth_user_id", str(res["user"]["id"]), key="set_cookie_login")
+                            st.toast(f"¡Hola de nuevo, {res['user']['username']}! 👋", icon="✅")
+                            import time
+                            time.sleep(0.5)
                             st.rerun()
                         else:
                             st.error(f"❌ {res['error']}")
@@ -190,16 +199,34 @@ def mostrar_pantalla_auth():
                 if st.form_submit_button("Registrarse y Entrar", type="primary", use_container_width=True):
                     if not user_reg or not pass_reg:
                         st.error("⚠️ Rellena todos los campos.")
+                    elif len(user_reg) < 3:
+                        st.error("⚠️ El nombre de usuario debe tener al menos 3 caracteres.")
+                    elif len(pass_reg) < 6:
+                        st.error("⚠️ La contraseña debe tener al menos 6 caracteres por seguridad.")
                     elif pass_reg != pass_reg2:
                         st.error("⚠️ Las contraseñas no coinciden.")
                     else:
                         res = db_manager.registrar_usuario(user_reg, pass_reg)
                         if "success" in res:
+                            st.toast("¡Cuenta creada con éxito! 🥳", icon="✅")
                             st.success("✅ ¡Cuenta creada! Ya puedes iniciar sesión en la otra pestaña.")
                         else:
                             st.error(f"❌ {res['error']}")
 
 if not st.session_state.usuario_actual:
+    if st.session_state.get("logging_out"):
+        cookie_manager.delete("auth_user_id", key="del_cookie_logout_top")
+        st.session_state.logging_out = False
+        mostrar_pantalla_auth()
+        st.stop()
+        
+    user_id_cookie = cookie_manager.get(cookie="auth_user_id")
+    if user_id_cookie:
+        user_data = db_manager.obtener_usuario_por_id(int(user_id_cookie))
+        if user_data:
+            st.session_state.usuario_actual = user_data
+            st.rerun()
+    
     mostrar_pantalla_auth()
     st.stop()
 
@@ -219,6 +246,24 @@ st.markdown(f'<p class="subtitle">Bienvenido/a, <b>{user_actual["username"]}</b>
 # ═══════════════════════════════════════════════════════════════════════════
 
 with st.sidebar:
+    st.markdown("### 🔔 Centro de Notificaciones")
+    notifs = db_manager.obtener_notificaciones_usuario(user_actual["id"])
+    if notifs:
+        with st.popover(f"Tienes {len(notifs)} notificación(es) nueva(s)"):
+            for n in notifs:
+                st.caption(f"📅 {str(n['fecha'])[:16]}")
+                st.markdown(f"**{n['mensaje']}**")
+                if st.button("Marcar como leída", key=f"nl_{n['id']}"):
+                    db_manager.marcar_notificacion_leida(n['id'])
+                    st.rerun()
+                st.markdown("---")
+            if st.button("Limpiar todas", type="primary", use_container_width=True):
+                db_manager.marcar_todas_leidas(user_actual["id"])
+                st.rerun()
+    else:
+        st.info("No tienes notificaciones nuevas.")
+        
+    st.markdown("---")
     st.markdown("## 📝 Nueva Opción de Viaje")
 
     nombre = st.text_input("🏷️ Nombre de la opción", placeholder="Ej: Apartamento playa Valencia")
@@ -310,7 +355,7 @@ with st.sidebar:
             if st.form_submit_button("Actualizar", use_container_width=True):
                 if nueva_pass:
                     db_manager.cambiar_password(user_actual["id"], nueva_pass)
-                    st.success("Actualizada.")
+                    st.toast("Contraseña actualizada ✅", icon="✅")
                 else:
                     st.error("Vacío.")
                     
@@ -319,7 +364,9 @@ with st.sidebar:
         if st.button("Unirse al Viaje", use_container_width=True) and codigo_union:
             res = db_manager.unirse_a_viaje(user_actual["id"], codigo_union.strip())
             if "success" in res:
-                st.success("¡Te has unido al viaje!")
+                db_manager.crear_notificacion_colaboradores(res["viaje_id"], user_actual["id"], f"👋 {user_actual['username']} se ha unido al viaje.")
+                st.toast("¡Te has unido al viaje! 🤝", icon="✅")
+                import time; time.sleep(0.5)
                 st.rerun()
             else:
                 st.error(res["error"])
@@ -327,6 +374,7 @@ with st.sidebar:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚪 Cerrar Sesión", use_container_width=True, type="primary"):
             st.session_state.usuario_actual = None
+            st.session_state.logging_out = True
             st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -387,7 +435,8 @@ if btn_calcular:
         }
 
         viaje_id = db_manager.guardar_viaje(datos, user_actual["id"])
-        st.success(f"✅ Opción guardada. Código para invitar amigos: **{datos['codigo_compartido']}**")
+        st.toast("Opción de viaje guardada correctamente 🚀", icon="✅")
+        st.info(f"🔑 Código para invitar amigos a este viaje: **{datos['codigo_compartido']}**")
 
 
 # =================================================================================
@@ -482,9 +531,17 @@ with tab_dashboard:
             "Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)",
             "Total (€)", "Por Persona (€)", "Personas", "Días",
         ]
+        
+        # Formatear numéricos a 2 decimales para quitar ceros innecesarios
+        cols_redondeo = ["Dist. I/V (km)", "Tiempo I/V (min)", "Reserva (€)", "Gasolina (€)", "Comida (€)", "Extras (€)", "Total (€)", "Por Persona (€)"]
+        for col in cols_redondeo:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(lambda x: round(float(x), 2) if pd.notna(x) else x)
 
         st.dataframe(
-            df_display.style.highlight_min(subset=["Total (€)", "Por Persona (€)"], color="#2d5a27"),
+            df_display.style.highlight_min(subset=["Total (€)", "Por Persona (€)"], color="#2d5a27").format(
+                {col: "{:.2f}" for col in cols_redondeo}
+            ),
             use_container_width=True,
             hide_index=True,
         )
@@ -544,12 +601,60 @@ with tab_dashboard:
                 st.markdown(f"🔑 **Código de Invitación:** `{v.get('codigo_compartido', 'N/A')}`")
                 st.markdown(f"👥 **Miembros:** {colabs_str}")
                 
+                # 🌤️ Botón de Clima
+                if st.button(f"🌤️ Ver Clima en {v['destino']}", key=f"btn_w_{v['id']}"):
+                    if v.get("lat_destino") and v.get("lon_destino"):
+                        with st.spinner("Consultando el tiempo en tiempo real..."):
+                            clima = weather_helper.obtener_clima(v["lat_destino"], v["lon_destino"])
+                            if clima:
+                                cw1, cw2, cw3 = st.columns(3)
+                                cw1.metric("Temperatura", f"{clima['temp_c']} °C", f"Sensación: {clima['sensacion_c']} °C")
+                                cw2.metric("Humedad", f"{clima['humedad']} %")
+                                cw3.metric("Viento", f"{clima['viento_kmh']} km/h")
+                                st.caption(f"☁️ Condición actual: **{clima['descripcion']}**")
+                                st.markdown("##### 📅 Previsión Próximos 3 Días")
+                                for prev in clima['prevision']:
+                                    st.markdown(f"- **{prev['fecha']}**: Máx {prev['max_c']}°C / Mín {prev['min_c']}°C ({prev['descripcion']})")
+                            else:
+                                st.error("No se pudo obtener el clima.")
+                    else:
+                        st.info("No hay coordenadas guardadas para este destino.")
+                
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     nuevo_est = st.selectbox("Cambiar Estado", ["Planificado", "Reservado", "Realizado"], index=["Planificado", "Reservado", "Realizado"].index(v["estado"]), key=f"est_{v['id']}")
                     if st.button("Actualizar", key=f"upd_est_{v['id']}"):
                         db_manager.actualizar_estado(v['id'], nuevo_est)
+                        db_manager.crear_notificacion_colaboradores(v['id'], user_actual["id"], f"🔄 {user_actual['username']} ha cambiado el estado a '{nuevo_est}'.")
                         st.rerun()
+                with c2:
+                    with st.popover("✏️ Editar Detalles"):
+                        with st.form(f"form_edit_{v['id']}"):
+                            n_nombre = st.text_input("Nombre", value=v["nombre"])
+                            n_personas = st.number_input("Personas", 1, 100, int(v["num_personas"]))
+                            n_dias = st.number_input("Días", 1, 365, int(v["num_dias"]))
+                            
+                            # Parsear fechas existentes si las hay
+                            d_ida, d_vta = None, None
+                            try: d_ida = datetime.strptime(v.get("fecha_ida", ""), "%Y-%m-%d").date()
+                            except: pass
+                            try: d_vta = datetime.strptime(v.get("fecha_vuelta", ""), "%Y-%m-%d").date()
+                            except: pass
+                            
+                            n_ida = st.date_input("Fecha Ida", value=d_ida)
+                            n_vuelta = st.date_input("Fecha Vuelta", value=d_vta)
+                            
+                            if st.form_submit_button("Guardar Cambios", type="primary", use_container_width=True):
+                                datos_upd = {
+                                    "nombre": n_nombre,
+                                    "num_personas": n_personas,
+                                    "num_dias": n_dias,
+                                    "fecha_ida": str(n_ida) if n_ida else "",
+                                    "fecha_vuelta": str(n_vuelta) if n_vuelta else ""
+                                }
+                                db_manager.actualizar_viaje(v['id'], datos_upd)
+                                db_manager.crear_notificacion_colaboradores(v['id'], user_actual["id"], f"✏️ {user_actual['username']} editó los detalles del viaje '{n_nombre}'.")
+                                st.rerun()
                 with c3:
                     if st.button("🗑️ Eliminar Viaje", key=f"del_{v['id']}"):
                         db_manager.eliminar_viaje(v['id'])
@@ -614,7 +719,8 @@ with tab_itinerario:
                         nuevo_itinerario[dia][row["Hora"]] = str(row[dia])
             
             db_manager.actualizar_itinerario(trip_data["id"], json.dumps(nuevo_itinerario, ensure_ascii=False))
-            st.success("✅ Calendario guardado correctamente.")
+            db_manager.crear_notificacion_colaboradores(trip_data['id'], user_actual["id"], f"📅 {user_actual['username']} modificó el calendario.")
+            st.toast("Calendario guardado correctamente", icon="✅")
             import time
             time.sleep(1)
             st.rerun()
@@ -715,11 +821,14 @@ with tab_aloj:
 with tab_ia:
     st.markdown("### 🤖 Veredicto de Inteligencia Artificial")
     if len(viajes_usuario) >= 2:
-        if st.button("✨ Generar Veredicto", type="primary"):
-            st.info("Llamando a Groq API...")
-            # ai_helper.generar_veredicto(viajes_usuario[:2]) # Demo
+        if st.button("✨ Generar Veredicto (Comparar mis 4 viajes más recientes)", type="primary"):
+            with st.spinner("🧠 Llama-3 está analizando los datos y calculando el veredicto óptimo..."):
+                respuesta_ia = ai_helper.generar_veredicto(viajes_usuario[:4])
+                st.markdown("---")
+                st.markdown(respuesta_ia)
+                st.markdown("---")
     else:
-        st.info("Necesitas al menos 2 viajes para comparar.")
+        st.info("Necesitas al menos 2 viajes guardados para poder compararlos.")
 
 # =================================================================================
 # TAB - PANEL ADMIN
@@ -742,7 +851,7 @@ if es_admin:
                     new_pass = st.text_input("Nueva Contraseña", key=f"p_{u['id']}", type="password")
                     if st.button("Forzar Cambio Password", key=f"bp_{u['id']}") and new_pass:
                         db_manager.cambiar_password(u["id"], new_pass)
-                        st.success("Contraseña cambiada.")
+                        st.toast("Contraseña forzada con éxito ✅", icon="✅")
                 with c3:
                     if st.button("🗑️ Borrar Usuario", key=f"delu_{u['id']}", type="primary"):
                         db_manager.eliminar_usuario(u["id"])
